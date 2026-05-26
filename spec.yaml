@@ -1,0 +1,43 @@
+# spec.yaml — el criterio como DATO (lo escribe y lo dueña el humano).
+#
+# Esto NO es código de test. Es la intención en forma declarativa. Un runner
+# genérico y fijo (runner.py) lo traduce a checks reales con Hypothesis. El
+# generator implementa src/ pero NUNCA toca este archivo ni el runner.
+#
+# Resultado: escribís el "qué" (pocas líneas de dato), no el "cómo" (test code).
+
+# función bajo prueba (módulo.función; src/ está en el path)
+target: duration.parse_duration
+
+# parámetros con los que el runner genera cientos de inputs (property-based)
+params:
+  h: { type: int, min: 0, max: 1000000 }
+  m: { type: int, min: 0, max: 1000000 }
+  s: { type: int, min: 0, max: 1000000 }
+
+# cómo se arma un input válido a partir de los params
+build: "{h}h{m}m{s}s"
+
+# verdad de referencia: se calcula SIN mirar la implementación (oracle diferencial)
+expected: "h*3600 + m*60 + s"
+
+# invariantes que debe respetar cualquier input válido
+invariantes:
+  - case_insensitive          # parse(t) == parse(t.upper()) == parse(t.lower())
+  - whitespace_insensitive    # los espacios no cambian el resultado
+
+# inputs inválidos: deben levantar la excepción indicada
+errores:
+  - { in: "",    raises: ValueError }
+  - { in: "   ", raises: ValueError }
+  - { in: "abc", raises: ValueError }
+  - { in: "h",   raises: ValueError }
+  - { in: "30",  raises: ValueError }
+
+# ejemplos concretos (sanity / documentación; no es donde está la fuerza)
+ejemplos:
+  - { in: "1h30m",    out: 5400 }
+  - { in: "45m",      out: 2700 }
+  - { in: "2h",       out: 7200 }
+  - { in: "90s",      out: 90 }
+  - { in: "1h30m15s", out: 5415 }

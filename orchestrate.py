@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Loop de orquestación Generator / Evaluator (versión CI-style, automatizada).
+"""Loop de orquestación (versión CI-style, automatizada).
 
-Flujo:
+    generator implementa src/  ──►  ORACLE (runner.py + spec.yaml vía pytest)
+            ▲                                   │
+            └────── contraejemplo si FAIL ◄─────┘
 
-    1. evaluator escribe los tests (property-based) desde CONTRACT.md   ← una vez
-    2. generator implementa src/
-    3. ORACLE: pytest + hypothesis
-       ├─ PASS → listo
-       └─ FAIL → el evaluator junta el contraejemplo, vuelve al paso 2
-
-El oracle (pytest + Hypothesis) es objetivo: corre cientos de inputs y no se
-puede "convencer". Quien escribe los tests (evaluator) NO es quien escribe el
-código (generator) — esa separación evita el autoaprobado.
+El oracle NO es un LLM: es `runner.py`, una pieza fija que lee `spec.yaml` (el
+criterio, escrito por el humano como dato) y corre cientos de inputs con
+Hypothesis. Determinístico → no se puede "convencer". El que escribe el código
+(generator) no escribe ni toca el criterio ni el oracle.
 
 Requisitos:
   - Claude Code:  npm i -g @anthropic-ai/claude-code ; claude login
@@ -19,10 +16,7 @@ Requisitos:
 
 Uso:
   python orchestrate.py            # loop completo
-  python orchestrate.py --oracle   # solo correr pytest (ver estado actual)
-
-Nota: la forma MÁS simple es interactiva — abrís `claude` en esta carpeta y le
-decís el flujo. Este script lo automatiza para mostrarlo sin intervención.
+  python orchestrate.py --oracle   # solo correr el oracle (pytest) y salir
 """
 import argparse
 import subprocess
@@ -32,27 +26,16 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent
 MAX_ROUNDS = 5
 
-EVAL_WRITE_TESTS = (
-    "Usá el subagente 'evaluator'. Leé CONTRACT.md y escribí "
-    "tests/test_duration.py con property-based testing (Hypothesis), una "
-    "propiedad/invariante por test. NO toques src/. No implementes nada, solo "
-    "los tests."
-)
-
 GENERATOR_PROMPT = (
-    "Usá el subagente 'generator'. Leé CONTRACT.md e implementá "
-    "src/duration.py para cumplir todas las propiedades. NO toques tests/. "
+    "Usá el subagente 'generator'. Leé CONTRACT.md y spec.yaml e implementá "
+    "src/duration.py para cumplir el criterio (es property-based: tiene que valer "
+    "para cualquier input válido). NO toques spec.yaml ni runner.py. "
     "No declares éxito: dejá el código y terminá."
 )
 
 GENERATOR_FIX_PROMPT = (
-    "Usá el subagente 'generator'. El oracle falló con este contraejemplo / "
-    "salida:\n\n{issues}\n\nArreglá SOLO eso en src/duration.py y terminá."
-)
-
-EVAL_VERDICT = (
-    "Usá el subagente 'evaluator'. Corré `pytest -q` y devolvé el JSON de "
-    "veredicto (overall + properties + counterexamples)."
+    "Usá el subagente 'generator'. El oracle falló:\n\n{issues}\n\n"
+    "Arreglá src/duration.py para que pase. NO toques spec.yaml ni runner.py."
 )
 
 
@@ -78,7 +61,7 @@ def run_claude(prompt: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--oracle", action="store_true", help="solo correr pytest y salir")
+    ap.add_argument("--oracle", action="store_true", help="solo correr el oracle y salir")
     args = ap.parse_args()
 
     if args.oracle:
@@ -88,14 +71,9 @@ def main():
         sys.exit(0 if passed else 1)
 
     print("=" * 60)
-    print("Generator / Evaluator  ·  criterios -> tests -> código")
+    print("Generator  ->  Oracle (spec.yaml + runner.py)")
     print("=" * 60)
 
-    # Paso 1: el evaluator escribe los tests desde el contrato (una sola vez)
-    print("\n[evaluator] escribiendo tests property-based desde CONTRACT.md...")
-    run_claude(EVAL_WRITE_TESTS)
-
-    # Pasos 2-4: loop generator -> oracle -> feedback
     issues = None
     for rnd in range(1, MAX_ROUNDS + 1):
         print(f"\n-- Ronda {rnd}/{MAX_ROUNDS} -----------------------------")
@@ -103,21 +81,20 @@ def main():
         run_claude(GENERATOR_PROMPT if issues is None
                    else GENERATOR_FIX_PROMPT.format(issues=issues))
 
-        print("[oracle] pytest + hypothesis...")
+        print("[oracle] pytest + hypothesis (lee spec.yaml)...")
         passed, out = run_oracle()
-        print(out.strip().splitlines()[-1] if out.strip() else "(sin salida)")
+        tail = out.strip().splitlines()[-1] if out.strip() else "(sin salida)"
+        print(tail)
 
         if passed:
-            print("[evaluator] veredicto final...")
-            print(run_claude(EVAL_VERDICT))
-            print(f"\nContrato cumplido en {rnd} ronda(s). Loop terminado.")
+            print(f"\nCriterio cumplido en {rnd} ronda(s). Loop terminado.")
             return
 
-        # el evaluator resume el contraejemplo para el generator
-        issues = run_claude(EVAL_VERDICT)
+        # el contraejemplo de Hypothesis es el feedback para el generator
+        issues = out[-1500:]
 
-    print(f"\nNo se cumplió el contrato en {MAX_ROUNDS} rondas. "
-          "Revisá el contrato o si el evaluator es lo bastante adversarial.")
+    print(f"\nNo se cumplió el criterio en {MAX_ROUNDS} rondas. "
+          "Revisá spec.yaml o subí MAX_ROUNDS.")
     sys.exit(1)
 
 

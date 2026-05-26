@@ -1,108 +1,98 @@
-# Generator / Evaluator demo
+# Generator / Oracle demo
 
-Ejemplo mínimo del patrón **Generator / Evaluator** con Claude Code.
-La idea (de la charla "Agentes SWE de largo horizonte"):
+Ejemplo mínimo del patrón **Generator / Evaluator** llevado a su forma más
+robusta: cuando hay una verdad objetiva, el "evaluator" no es un LLM — es un
+**oracle determinístico**.
 
-> **Separá el agente que construye del agente que juzga.**
-> Un agente que se corrige a sí mismo arrastra dos sesgos: ansiedad de contexto
-> (cierra antes de tiempo) y sesgo de autoevaluación (aprueba su propio trabajo
-> mediocre). Dos roles separados, con permisos asimétricos, lo destraban.
+De la charla "Agentes SWE de largo horizonte":
 
-## La idea central: escribís criterios, no casos
+> **Separá el que construye del que juzga.** Y, si podés, que el que juzga sea
+> objetivo (un oracle), no otro LLM que se pueda autoaprobar.
 
-El humano **no escribe los tests a mano** (no escala y sesga). Escribe el
-**contrato**: qué propiedades tiene que cumplir el código. El **evaluator**
-traduce esas propiedades a tests con **property-based testing** (Hypothesis), que
-genera cientos de casos automáticamente. El **generator** escribe el código.
-Nadie se autoaprueba: el que construye no es el que escribe los tests.
+## La idea central: el criterio es DATO, no código
 
-## La tarea (chiquita a propósito)
+El recorrido de decisiones (y por qué este diseño):
 
-Implementar `parse_duration("1h30m") -> 5400` en `src/duration.py`.
-El foco no es la tarea — es el **workflow**.
+1. **¿Tests a mano?** No escala y sesga (escribís los mismos happy paths).
+2. **¿Que los escriba el generator?** Se autoaprueba (escribe código que pasa sus
+   propios tests).
+3. **¿Que los escriba un evaluator LLM?** Lo mismo, movido un casillero: puede
+   escribir tests flojos o aflojarlos para que den verde.
+4. **¿Tests escritos a mano por el humano?** Sigue siendo escribir *código*, que
+   es justo lo que queremos delegar.
+5. **Solución:** el humano escribe el **criterio como dato** (`spec.yaml`), y una
+   pieza fija y genérica (`runner.py`) lo ejecuta. El humano escribe el *qué*
+   (declarativo, pocas líneas), nunca el *cómo*.
 
 ## Estructura
 
 ```
 generator-evaluator-demo/
-├── CONTRACT.md              ← el contrato: propiedades P1-P6 + invariantes E1-E4
-├── src/duration.py          ← lo que implementa el GENERATOR (arranca como stub)
-├── tests/                   ← VACÍO: lo llena el EVALUATOR (property-based)
+├── spec.yaml            ← el CRITERIO como dato. Lo dueña el humano. NO es código.
+├── runner.py            ← oracle genérico y fijo: lee spec.yaml, corre con Hypothesis
+├── pytest.ini           ← hace que pytest colecte runner.py
+├── CONTRACT.md          ← la intención en prosa (para humanos)
+├── src/duration.py      ← lo implementa el GENERATOR (arranca como stub)
 ├── .claude/agents/
-│   ├── generator.md         ← construye src/. tools: Read/Write/Edit/Bash
-│   └── evaluator.md         ← escribe tests/ y juzga. No toca src/
-├── requirements.txt         ← pytest + hypothesis
-└── orchestrate.py           ← el loop automatizado (CI-style)
+│   └── generator.md     ← implementa src/. No toca spec.yaml ni runner.py
+├── requirements.txt     ← pytest, hypothesis, pyyaml
+└── orchestrate.py       ← loop automatizado: generator → oracle → feedback
 ```
 
-## Los tres roles (nadie se autoaprueba)
+## Cómo se reparten los roles (nadie se autoaprueba)
 
-1. **Humano** → escribe `CONTRACT.md` como propiedades (el "qué").
-2. **Evaluator** → traduce las propiedades a `tests/test_duration.py` con
-   Hypothesis. Escribe SOLO en `tests/`, nunca en `src/`.
-3. **Generator** → implementa `src/duration.py`. Nunca toca `tests/`.
+| Rol | Quién | Por qué no es gameable |
+|---|---|---|
+| **Criterio** | el humano, en `spec.yaml` | son pocas líneas de dato, las revisás de un vistazo |
+| **Oracle** | `runner.py` (fijo) + Hypothesis | determinístico, corre cientos de inputs, no es un LLM |
+| **Código** | el `generator` | no puede tocar `spec.yaml` ni `runner.py` |
 
-El oracle final es **objetivo**: pytest + Hypothesis corren cientos de inputs y,
-para P1, comparan contra una fórmula de referencia (`h*3600+m*60+s`) — no contra
-la implementación.
+La correctitud (P central) se chequea contra una **fórmula de referencia**
+(`h*3600+m*60+s`) que sale del spec — no de mirar la implementación. Eso es un
+**oracle diferencial**.
 
 ## Cómo correrlo
 
-### Opción A — interactivo (la más simple)
+### Interactivo (lo más simple)
 ```bash
-cd generator-evaluator-demo
 pip install -r requirements.txt
 claude
 ```
-Y en el chat:
-> Usá el evaluator para escribir los tests property-based desde CONTRACT.md.
-> Después el generator para implementar src/. Iterá hasta que `pytest -q` pase.
+> Usá el generator para implementar src/duration.py contra CONTRACT.md y
+> spec.yaml. Iterá hasta que `pytest -q` pase.
 
-### Opción B — automatizado (mostrar el loop sin humano)
+### Automatizado
 ```bash
 pip install -r requirements.txt
 npm i -g @anthropic-ai/claude-code && claude login   # si no lo tenés
 python orchestrate.py
 ```
 
-## Qué observar en clase
-
-- `tests/` arranca **vacío** y `src/` es un stub → el sistema arranca en rojo.
-- El **evaluator** escribe property-based tests. Hypothesis no prueba 3 casos:
-  prueba cientos, y cuando encuentra un input que rompe una propiedad, te da el
-  **contraejemplo mínimo** (ej: "parse('h') devolvió 0, esperaba ValueError").
-- El **generator** que clava los ejemplos del contrato igual puede fallar P1 para
-  inputs raros que no probó. Ahí se ve la diferencia entre "pasa mis 10 casos" y
-  "cumple la propiedad".
-- El contraejemplo de Hypothesis es feedback objetivo y accionable.
-
-## Qué tipo de tests debería producir el evaluator (referencia para el docente)
-
-```python
-from hypothesis import given, strategies as st
-nn = st.integers(min_value=0, max_value=10**6)
-
-@given(h=nn, m=nn, s=nn)                     # P1: oracle diferencial
-def test_p1(h, m, s):
-    assert parse_duration(f"{h}h{m}m{s}s") == h*3600 + m*60 + s
-
-@given(h=nn, m=nn, s=nn)                     # P3: case-insensitive
-def test_p3(h, m, s):
-    t = f"{h}h{m}m{s}s"
-    assert parse_duration(t) == parse_duration(t.upper())
-
-@pytest.mark.parametrize("bad", ["", "   ", "abc", "h", "ms", "30"])  # E1-E4
-def test_errors(bad):
-    with pytest.raises(ValueError):
-        parse_duration(bad)
+### Ver el estado del oracle
+```bash
+python orchestrate.py --oracle      # arranca en ROJO: el stub no implementa nada
 ```
 
-## Guardrails
+## Qué observar en clase
 
-- `MAX_ROUNDS = 5` en `orchestrate.py` — corta el loop (no factura infinita).
-- El generator no escribe tests; el evaluator no escribe src. La separación es lo
-  que evita el autoaprobado.
-- pytest + Hypothesis son determinísticos como veredicto final — no dependen de
-  la opinión del LLM. Para enforcement **duro** de los permisos (que sea
-  imposible tocar la carpeta ajena, no sólo pedido) se usan hooks `PreToolUse` o
-  managed settings — eso se ve en el Módulo 4 (Claude Code).
+- `src/` es un stub → el oracle arranca en **rojo**.
+- El humano sólo tocó `spec.yaml` (dato). Nadie escribió test code por tarea.
+- El **generator** que clava los `ejemplos` igual puede fallar la **propiedad**
+  para inputs raros (números enormes, combinaciones que no probó). Hypothesis se
+  los encuentra y devuelve el **contraejemplo mínimo** — feedback objetivo.
+- El veredicto final no depende de la opinión de ningún LLM: es pytest.
+
+## ¿Y si NO hay oracle objetivo?
+
+Para "¿este diseño es coherente?", "¿esta UI se entiende?" no hay fórmula. Ahí sí
+necesitás un **evaluator LLM** — y aceptás que es más débil. Lo mitigás: separado
+del generator, prompt adversarial, rúbrica que dueña el humano, y spot-checks.
+Cuando existe un oracle duro (tests, compilador, types, una API real), preferilo
+siempre: es el caso del compilador C donde el oracle era GCC ("compila Linux o no").
+
+## Nota sobre permisos
+
+Que el generator "no toque spec.yaml ni runner.py" lo sostiene su system prompt +
+correr en su propio context. Para enforcement **duro** (imposible, no sólo
+pedido) se usan hooks `PreToolUse` o managed settings con path deny-lists — eso
+se ve en el Módulo 4 (Claude Code).
