@@ -13,6 +13,16 @@ La idea (de la charla "Agentes SWE de largo horizonte"):
 Implementar `parse_duration("1h30m") -> 5400` en `src/duration.py`.
 El foco no es la tarea — es el **workflow**.
 
+## Dos versiones (mostrar la evolución en clase)
+
+- **`/` (raíz, v1)** — tests escritos **a mano** por el humano. Baseline simple.
+- **[`v2-criterios-no-casos/`](v2-criterios-no-casos/)** — el humano escribe
+  **propiedades**, el **evaluator** genera los tests con property-based testing
+  (Hypothesis). Responde a la crítica "escribir tests a mano no escala".
+
+El arco pedagógico: v1 te muestra la separación de roles; v2 te muestra que lo
+que escribís a mano es el **criterio**, no los **casos**.
+
 ## Estructura
 
 ```

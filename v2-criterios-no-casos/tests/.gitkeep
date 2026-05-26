@@ -1,0 +1,7 @@
+# Esta carpeta arranca VACÍA a propósito.
+#
+# El evaluator genera aquí test_duration.py (property-based, con Hypothesis)
+# a partir de las propiedades de CONTRACT.md. NO escribimos los casos a mano.
+#
+# En README.md hay un ejemplo de qué tipo de tests debería producir, como
+# referencia para el docente.
