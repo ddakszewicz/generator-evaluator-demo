@@ -1,13 +1,10 @@
 """parse_duration — convierte una duración en texto a segundos.
 
-STUB inicial. El generator tiene que implementarlo contra CONTRACT.md.
-El evaluator NO toca este archivo: lo verifica corriendo los tests.
+STUB. El generator lo implementa contra CONTRACT.md (propiedades).
+El evaluator NO toca este archivo.
 """
 
 
 def parse_duration(text: str) -> int:
-    """Convierte algo como "1h30m" a segundos (int).
-
-    Ver CONTRACT.md para los criterios completos.
-    """
+    """Convierte "1h30m" a segundos. Ver CONTRACT.md para las propiedades."""
     raise NotImplementedError("el generator todavía no implementó esto")

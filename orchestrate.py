@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 """Loop de orquestación Generator / Evaluator (versión CI-style, automatizada).
 
-Implementa el ciclo del Sprint Contract:
+Flujo:
 
-    plan ──► generator construye ──► ORACLE (pytest) ──► evaluator califica
-                    ▲                                          │
-                    └──────────── issues si FAIL ◄─────────────┘
+    1. evaluator escribe los tests (property-based) desde CONTRACT.md   ← una vez
+    2. generator implementa src/
+    3. ORACLE: pytest + hypothesis
+       ├─ PASS → listo
+       └─ FAIL → el evaluator junta el contraejemplo, vuelve al paso 2
 
-El oracle duro es pytest: es objetivo y no se puede "convencer". El evaluator
-agrega criterio cualitativo encima (lee el contrato, razona sobre evidencia).
+El oracle (pytest + Hypothesis) es objetivo: corre cientos de inputs y no se
+puede "convencer". Quien escribe los tests (evaluator) NO es quien escribe el
+código (generator) — esa separación evita el autoaprobado.
 
 Requisitos:
-  - Claude Code instalado y logueado:  npm i -g @anthropic-ai/claude-code ; claude login
-  - pytest:  pip install pytest
+  - Claude Code:  npm i -g @anthropic-ai/claude-code ; claude login
+  - deps:  pip install -r requirements.txt
 
 Uso:
-  python orchestrate.py            # corre el loop completo
-  python orchestrate.py --oracle   # solo corre pytest (ver estado actual)
+  python orchestrate.py            # loop completo
+  python orchestrate.py --oracle   # solo correr pytest (ver estado actual)
 
-Nota pedagógica: la forma MÁS simple de hacer esto es interactiva — abrís
-`claude` en esta carpeta y le decís "usá el generator para cumplir CONTRACT.md,
-después el evaluator para verificar; iterá hasta que pase". Este script es la
-versión automatizada para mostrar el loop sin intervención humana.
+Nota: la forma MÁS simple es interactiva — abrís `claude` en esta carpeta y le
+decís el flujo. Este script lo automatiza para mostrarlo sin intervención.
 """
 import argparse
 import subprocess
@@ -31,100 +32,92 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent
 MAX_ROUNDS = 5
 
+EVAL_WRITE_TESTS = (
+    "Usá el subagente 'evaluator'. Leé CONTRACT.md y escribí "
+    "tests/test_duration.py con property-based testing (Hypothesis), una "
+    "propiedad/invariante por test. NO toques src/. No implementes nada, solo "
+    "los tests."
+)
+
 GENERATOR_PROMPT = (
     "Usá el subagente 'generator'. Leé CONTRACT.md e implementá "
-    "src/duration.py para cumplir TODOS los criterios, incluidos los casos de "
-    "error. No toques tests/. No declares éxito: dejá el código y terminá."
+    "src/duration.py para cumplir todas las propiedades. NO toques tests/. "
+    "No declares éxito: dejá el código y terminá."
 )
 
 GENERATOR_FIX_PROMPT = (
-    "Usá el subagente 'generator'. El evaluator reportó fallas:\n\n{issues}\n\n"
-    "Arreglá SOLO eso en src/duration.py y terminá sin declarar éxito."
+    "Usá el subagente 'generator'. El oracle falló con este contraejemplo / "
+    "salida:\n\n{issues}\n\nArreglá SOLO eso en src/duration.py y terminá."
 )
 
-EVALUATOR_PROMPT = (
-    "Usá el subagente 'evaluator'. Verificá src/duration.py contra CONTRACT.md "
-    "corriendo `pytest -q`. Devolvé el JSON de veredicto (overall PASS/FAIL + "
-    "items con evidencia)."
+EVAL_VERDICT = (
+    "Usá el subagente 'evaluator'. Corré `pytest -q` y devolvé el JSON de "
+    "veredicto (overall + properties + counterexamples)."
 )
 
 
 def run_oracle() -> tuple[bool, str]:
-    """Corre pytest. Devuelve (passed, output)."""
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q"],
         cwd=REPO, capture_output=True, text=True,
     )
-    output = proc.stdout + proc.stderr
-    return proc.returncode == 0, output
+    return proc.returncode == 0, proc.stdout + proc.stderr
 
 
 def run_claude(prompt: str) -> str:
-    """Invoca Claude Code en modo headless. Devuelve el texto de salida.
-
-    Usa `claude -p` (print/non-interactive). Para que pueda editar archivos sin
-    frenar por permisos en un loop automático, conviene tener allow-lists en
-    .claude/settings.json o correr con un permission-mode acorde.
-    """
     try:
         proc = subprocess.run(
             ["claude", "-p", prompt],
             cwd=REPO, capture_output=True, text=True, timeout=600,
         )
     except FileNotFoundError:
-        print("ERROR: no se encontró el comando `claude`.")
-        print("Instalá Claude Code:  npm i -g @anthropic-ai/claude-code")
-        print("Después:  claude login")
+        print("ERROR: no se encontró `claude`. Instalá: npm i -g @anthropic-ai/claude-code")
         sys.exit(1)
     return proc.stdout + proc.stderr
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--oracle", action="store_true",
-                    help="solo correr pytest y salir")
+    ap.add_argument("--oracle", action="store_true", help="solo correr pytest y salir")
     args = ap.parse_args()
 
     if args.oracle:
         passed, out = run_oracle()
         print(out)
-        print("ORACLE:", "PASS ✅" if passed else "FAIL ❌")
+        print("ORACLE:", "PASS" if passed else "FAIL")
         sys.exit(0 if passed else 1)
 
     print("=" * 60)
-    print("LOOP Generator / Evaluator  ·  Sprint Contract")
+    print("Generator / Evaluator  ·  criterios -> tests -> código")
     print("=" * 60)
 
+    # Paso 1: el evaluator escribe los tests desde el contrato (una sola vez)
+    print("\n[evaluator] escribiendo tests property-based desde CONTRACT.md...")
+    run_claude(EVAL_WRITE_TESTS)
+
+    # Pasos 2-4: loop generator -> oracle -> feedback
     issues = None
     for rnd in range(1, MAX_ROUNDS + 1):
-        print(f"\n── Ronda {rnd}/{MAX_ROUNDS} ─────────────────────────────")
+        print(f"\n-- Ronda {rnd}/{MAX_ROUNDS} -----------------------------")
+        print("[generator] implementando...")
+        run_claude(GENERATOR_PROMPT if issues is None
+                   else GENERATOR_FIX_PROMPT.format(issues=issues))
 
-        # 1. Generator construye (o arregla)
-        print("[generator] construyendo...")
-        if issues is None:
-            run_claude(GENERATOR_PROMPT)
-        else:
-            run_claude(GENERATOR_FIX_PROMPT.format(issues=issues))
-
-        # 2. Oracle duro (pytest) — el árbitro objetivo
-        print("[oracle] pytest...")
+        print("[oracle] pytest + hypothesis...")
         passed, out = run_oracle()
         print(out.strip().splitlines()[-1] if out.strip() else "(sin salida)")
 
         if passed:
-            # 3. Evaluator confirma (criterio cualitativo encima del oracle verde)
-            print("[evaluator] verificando contra el contrato...")
-            verdict = run_claude(EVALUATOR_PROMPT)
-            print(verdict)
-            print(f"\n✅ Contrato cumplido en {rnd} ronda(s). Loop terminado.")
+            print("[evaluator] veredicto final...")
+            print(run_claude(EVAL_VERDICT))
+            print(f"\nContrato cumplido en {rnd} ronda(s). Loop terminado.")
             return
 
-        # 4. Falla → el evaluator detalla qué falta, se lo pasamos al generator
-        print("[evaluator] juntando issues para el generator...")
-        issues = run_claude(EVALUATOR_PROMPT)
+        # el evaluator resume el contraejemplo para el generator
+        issues = run_claude(EVAL_VERDICT)
 
-    print(f"\n❌ No se cumplió el contrato en {MAX_ROUNDS} rondas. "
-          "Revisá el contrato o el evaluator (¿es lo bastante adversarial?).")
+    print(f"\nNo se cumplió el contrato en {MAX_ROUNDS} rondas. "
+          "Revisá el contrato o si el evaluator es lo bastante adversarial.")
     sys.exit(1)
 
 
