@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Loop de orquestación (versión CI-style, automatizada).
+"""Loop de orquestación Generator / Evaluator (CI-style, automatizado).
 
-    generator implementa src/  ──►  ORACLE (runner.py + spec.yaml vía pytest)
-            ▲                                   │
-            └────── contraejemplo si FAIL ◄─────┘
+    generator implementa src/
+         │
+         ▼
+    evaluator (agente SEPARADO, contexto fresco, no toca código)
+         │  corre el oracle como instrumento + review adversarial
+         ▼
+    ORACLE (runner.py + spec.yaml vía pytest)  ── árbitro duro, anclaje objetivo
+         ├─ PASS → listo
+         └─ FAIL → feedback del evaluator vuelve al generator → repetir
 
-El oracle NO es un LLM: es `runner.py`, una pieza fija que lee `spec.yaml` (el
-criterio, escrito por el humano como dato) y corre cientos de inputs con
-Hypothesis. Determinístico → no se puede "convencer". El que escribe el código
-(generator) no escribe ni toca el criterio ni el oracle.
+Tres piezas, complementarias:
+  - generator: escribe src/ (write).
+  - evaluator: agente aparte, sólo Read+Bash. No edita src/ (no arregla para
+    aprobar) ni spec.yaml (no afloja el criterio). Su independencia viene de
+    NO compartir el contexto del generator + NO poder tocar lo que juzga.
+  - oracle: runner.py corre spec.yaml con Hypothesis. Determinístico. Es el
+    instrumento del evaluator y el anclaje del veredicto (la terminación del loop
+    no depende de lo que diga el LLM, sino de pytest).
 
 Requisitos:
   - Claude Code:  npm i -g @anthropic-ai/claude-code ; claude login
@@ -34,12 +44,19 @@ GENERATOR_PROMPT = (
 )
 
 GENERATOR_FIX_PROMPT = (
-    "Usá el subagente 'generator'. El oracle falló:\n\n{issues}\n\n"
-    "Arreglá src/duration.py para que pase. NO toques spec.yaml ni runner.py."
+    "Usá el subagente 'generator'. El evaluator reportó:\n\n{feedback}\n\n"
+    "Arreglá src/duration.py. NO toques spec.yaml ni runner.py."
+)
+
+EVALUATOR_PROMPT = (
+    "Usá el subagente 'evaluator'. Corré el oracle (`pytest -q`) sobre "
+    "src/duration.py, interpretá los contraejemplos, hacé review adversarial de "
+    "lo que el oracle no cubre, y devolvé el JSON de veredicto + feedback."
 )
 
 
 def run_oracle() -> tuple[bool, str]:
+    """Anclaje objetivo: pytest. La terminación del loop depende de esto, no del LLM."""
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q"],
         cwd=REPO, capture_output=True, text=True,
@@ -71,27 +88,26 @@ def main():
         sys.exit(0 if passed else 1)
 
     print("=" * 60)
-    print("Generator  ->  Oracle (spec.yaml + runner.py)")
+    print("Generator -> Evaluator (agente aparte) -> Oracle")
     print("=" * 60)
 
-    issues = None
+    feedback = None
     for rnd in range(1, MAX_ROUNDS + 1):
         print(f"\n-- Ronda {rnd}/{MAX_ROUNDS} -----------------------------")
+
         print("[generator] implementando...")
-        run_claude(GENERATOR_PROMPT if issues is None
-                   else GENERATOR_FIX_PROMPT.format(issues=issues))
+        run_claude(GENERATOR_PROMPT if feedback is None
+                   else GENERATOR_FIX_PROMPT.format(feedback=feedback))
 
-        print("[oracle] pytest + hypothesis (lee spec.yaml)...")
-        passed, out = run_oracle()
-        tail = out.strip().splitlines()[-1] if out.strip() else "(sin salida)"
-        print(tail)
+        print("[evaluator] juzgando (contexto fresco, no toca código)...")
+        feedback = run_claude(EVALUATOR_PROMPT)
+        print(feedback)
 
+        # anclaje objetivo: la decisión de terminar NO la toma el LLM, la toma pytest
+        passed, _ = run_oracle()
         if passed:
-            print(f"\nCriterio cumplido en {rnd} ronda(s). Loop terminado.")
+            print(f"\nOracle en verde. Criterio cumplido en {rnd} ronda(s).")
             return
-
-        # el contraejemplo de Hypothesis es el feedback para el generator
-        issues = out[-1500:]
 
     print(f"\nNo se cumplió el criterio en {MAX_ROUNDS} rondas. "
           "Revisá spec.yaml o subí MAX_ROUNDS.")
